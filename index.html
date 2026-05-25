@@ -312,7 +312,7 @@ const btnReset = document.getElementById('btnReset');
 const speedRange = document.getElementById('speedRange');
 const chkAutoScale = document.getElementById('chkAutoScale');
 
-let running = false;
+let running = true;
 let animId = null;
 let stepsPerFrame = 3;
 
@@ -367,9 +367,11 @@ btnReset.addEventListener('click', () => {
   }
 });
 
+btnPlay.textContent = '⏸ 暂停';
 renderer.renderField(sim);
 const initPat = new Float32Array(360);
 renderer.renderPattern(initPat);
+loop();
 </script>
 </body>
 </html>
