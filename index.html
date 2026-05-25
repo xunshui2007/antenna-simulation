@@ -8,39 +8,33 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Arial, sans-serif;
-  display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 15px;
+  display: flex; flex-direction: column; align-items: center; padding: 15px;
 }
-h1 { font-size: 20px; margin: 8px 0; color: #e94560; letter-spacing: 2px; }
-.container { display: flex; flex-wrap: wrap; gap: 15px; justify-content: center; max-width: 1300px; }
-.panel {
-  background: #16213e; border-radius: 10px; padding: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-}
-.panel h3 { font-size: 14px; margin-bottom: 8px; color: #0f3460; background: #e94560; display: inline-block; padding: 2px 12px; border-radius: 4px; }
-canvas { display: block; image-rendering: pixelated; }
+h1 { font-size: 20px; margin: 8px 0; color: #e94560; }
+.container { display: flex; flex-wrap: wrap; gap: 15px; justify-content: center; }
+.panel { background: #16213e; border-radius: 10px; padding: 12px; }
+canvas { display: block; }
 .controls {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-top: 10px;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  justify-content: center; margin-top: 10px;
 }
 .controls button {
-  background: #0f3460; color: #eee; border: none; padding: 8px 18px; border-radius: 6px;
-  cursor: pointer; font-size: 13px; transition: background 0.2s;
+  background: #0f3460; color: #eee; border: none; padding: 8px 18px;
+  border-radius: 6px; cursor: pointer; font-size: 13px;
 }
 .controls button:hover { background: #e94560; }
-.controls button:disabled { opacity: 0.4; cursor: not-allowed; }
 .controls label { font-size: 13px; color: #aaa; }
-.controls input[type=range] { width: 100px; accent-color: #e94560; }
 .info { font-size: 13px; color: #aaa; margin-top: 8px; text-align: center; }
 .info span { color: #e94560; font-weight: bold; }
 </style>
 </head>
 <body>
-<h1>⚡ 2D FDTD 偶极子天线仿真</h1>
+<h1>2D FDTD 偶极子天线仿真</h1>
 <div class="container">
   <div class="panel">
     <h3>Ez 场分布</h3>
     <canvas id="fieldCanvas" width="480" height="480"></canvas>
-    <div class="info">
-      步进: <span id="stepDisplay">0</span> &nbsp;|&nbsp; 时间: <span id="timeDisplay">0.00</span>
-    </div>
+    <div class="info">步进: <span id="stepDisplay">0</span></div>
   </div>
   <div class="panel">
     <h3>辐射方向图</h3>
@@ -49,329 +43,223 @@ canvas { display: block; image-rendering: pixelated; }
   </div>
 </div>
 <div class="controls">
-  <button id="btnPlay">▶ 运行</button>
-  <button id="btnReset">⟳ 重置</button>
+  <button id="btnPlay">暂停</button>
+  <button id="btnReset">重置</button>
   <label>速度: <input type="range" id="speedRange" min="1" max="10" value="3"></label>
-  <label style="margin-left:10px">
-    <input type="checkbox" id="chkAutoScale" checked> 自动色阶
-  </label>
-</div>
-<div class="info" style="max-width:800px">
-  偶极子长度: 30 单元 &nbsp;|&nbsp; 馈电间隙: 4 单元 &nbsp;|&nbsp;
-  网格: 160×160 &nbsp;|&nbsp; 激励: 高斯脉冲 &nbsp;|&nbsp; 边界: Mur 一阶 ABC
 </div>
 
 <script>
-class FDTDSim {
-  constructor(nx, ny, dipoleLen, feedGap) {
-    this.nx = nx; this.ny = ny;
-    this.dx = 1; this.dy = 1;
-    this.courant = 0.5;
-    this.dt = this.courant / Math.sqrt(1/this.dx**2 + 1/this.dy**2);
-    this.dipoleLen = dipoleLen;
-    this.feedGap = feedGap;
-    this.feedX = nx >> 1;
-    this.feedY = ny >> 1;
-    this.timeStep = 0;
+const NX = 160, NY = 160;
+const DLEN = 30, FGAP = 4;
+const CX = NX >> 1, CY = NY >> 1;
+const DT = 0.5 / Math.sqrt(2);
 
-    this.Ez = new Float32Array(nx * ny);
-    this.Hx = new Float32Array(nx * ny);
-    this.Hy = new Float32Array(nx * ny);
-    this.EzPrev = new Float32Array(nx * ny);
+var Ez = new Float64Array(NX * NY);
+var Hx = new Float64Array(NX * NY);
+var Hy = new Float64Array(NX * NY);
+var EzPrev = new Float64Array(NX * NY);
+var PEC = new Uint8Array(NX * NY);
+var srcJ = [];
+var step = 0;
+var running = true;
 
-    this.pecMask = new Uint8Array(nx * ny);
-    this.sourcePositions = [];
-    this._initPEC();
-    this._initSource();
-    this.abcCoeff = (this.courant - 1) / (this.courant + 1);
-  }
+function idx(i, j) { return i * NY + j; }
 
-  idx(i, j) { return i * this.ny + j; }
+(function init() {
+  var half = DLEN >> 1, gh = FGAP >> 1;
+  var ds = CY - half, de = CY + half;
+  var gs = CY - gh, ge = CY + gh;
+  for (var i = CX; i < Math.min(CX + 3, NX); i++)
+    for (var j = ds; j <= de; j++)
+      if (j >= 0 && j < NY && !(j >= gs && j <= ge))
+        PEC[idx(i, j)] = 1;
+  for (var j = CY - gh; j <= CY + gh; j++)
+    if (j >= 0 && j < NY) srcJ.push(j);
+})();
 
-  _initPEC() {
-    const halfLen = this.dipoleLen >> 1;
-    const gapHalf = this.feedGap >> 1;
-    const ds = this.feedY - halfLen;
-    const de = this.feedY + halfLen;
-    const gs = this.feedY - gapHalf;
-    const ge = this.feedY + gapHalf;
-    for (let i = this.feedX; i < Math.min(this.feedX + 3, this.nx); i++) {
-      for (let j = ds; j <= de; j++) {
-        if (j >= 0 && j < this.ny && !(j >= gs && j <= ge)) {
-          this.pecMask[this.idx(i, j)] = 1;
-        }
-      }
-    }
-  }
-
-  _initSource() {
-    const gapHalf = this.feedGap >> 1;
-    for (let j = this.feedY - gapHalf; j <= this.feedY + gapHalf; j++) {
-      if (j >= 0 && j < this.ny) this.sourcePositions.push(j);
-    }
-  }
-
-  gaussian(t, delay = 40, width = 12) {
-    const x = (t - delay) / width;
-    return Math.exp(-x * x);
-  }
-
-  step() {
-    const { nx, ny, dt, dx, dy, abcCoeff } = this;
-    const Ez = this.Ez, Hx = this.Hx, Hy = this.Hy, EzPrev = this.EzPrev;
-    const pec = this.pecMask;
-    const nyp = ny;
-
-    for (let i = 0; i < nx; i++) {
-      for (let j = 0; j < ny - 1; j++) {
-        Hx[this.idx(i, j)] -= dt / dy * (Ez[this.idx(i, j + 1)] - Ez[this.idx(i, j)]);
-      }
-    }
-    for (let i = 0; i < nx - 1; i++) {
-      for (let j = 0; j < ny; j++) {
-        Hy[this.idx(i, j)] += dt / dx * (Ez[this.idx(i + 1, j)] - Ez[this.idx(i, j)]);
-      }
-    }
-
-    for (let i = 1; i < nx - 1; i++) {
-      for (let j = 1; j < ny - 1; j++) {
-        const curl = (Hy[this.idx(i, j)] - Hy[this.idx(i - 1, j)]) / dx
-                   - (Hx[this.idx(i, j)] - Hx[this.idx(i, j - 1)]) / dy;
-        Ez[this.idx(i, j)] += dt * curl;
-      }
-    }
-
-    const src = this.gaussian(this.timeStep);
-    for (const j of this.sourcePositions) {
-      Ez[this.idx(this.feedX, j)] = src;
-    }
-
-    for (let i = 0; i < nx; i++) {
-      for (let j = 0; j < ny; j++) {
-        if (pec[this.idx(i, j)]) Ez[this.idx(i, j)] = 0;
-      }
-    }
-
-    for (let j = 1; j < ny - 1; j++) {
-      const p0 = this.idx(0, j), p1 = this.idx(1, j);
-      Ez[p0] = EzPrev[this.idx(1, j)] + abcCoeff * (Ez[p1] - Ez[p0]);
-      const p2 = this.idx(nx - 1, j), p3 = this.idx(nx - 2, j);
-      Ez[p2] = EzPrev[this.idx(nx - 2, j)] + abcCoeff * (Ez[p3] - Ez[p2]);
-    }
-    for (let i = 1; i < nx - 1; i++) {
-      const p0 = this.idx(i, 0), p1 = this.idx(i, 1);
-      Ez[p0] = EzPrev[this.idx(i, 1)] + abcCoeff * (Ez[p1] - Ez[p0]);
-      const p2 = this.idx(i, ny - 1), p3 = this.idx(i, ny - 2);
-      Ez[p2] = EzPrev[this.idx(i, ny - 2)] + abcCoeff * (Ez[p3] - Ez[p2]);
-    }
-
-    for (let i = 0; i < nx * ny; i++) EzPrev[i] = Ez[i];
-    this.timeStep++;
-  }
-
-  getRadiationPattern(radius) {
-    if (!radius) radius = Math.min(this.nx, this.ny) / 3;
-    const cx = this.feedX, cy = this.feedY;
-    const N = 360;
-    const pattern = new Float32Array(N);
-    for (let k = 0; k < N; k++) {
-      const theta = (k / N) * 2 * Math.PI;
-      const ix = Math.round(cx + radius * Math.cos(theta));
-      const iy = Math.round(cy + radius * Math.sin(theta));
-      if (ix >= 0 && ix < this.nx && iy >= 0 && iy < this.ny) {
-        pattern[k] = Math.abs(this.Ez[this.idx(ix, iy)]);
-      }
-    }
-    let maxVal = 0;
-    for (let k = 0; k < N; k++) if (pattern[k] > maxVal) maxVal = pattern[k];
-    if (maxVal > 1e-15) for (let k = 0; k < N; k++) pattern[k] /= maxVal;
-    return pattern;
-  }
+function pulse(t) {
+  var x = (t - 40) / 12;
+  return Math.exp(-x * x);
 }
 
-class Renderer {
-  constructor(fieldCanvas, patternCanvas) {
-    this.fCtx = fieldCanvas.getContext('2d');
-    this.pCtx = patternCanvas.getContext('2d');
-    this.fW = fieldCanvas.width;
-    this.fH = fieldCanvas.height;
-    this.pW = patternCanvas.width;
-    this.pH = patternCanvas.height;
-    this.autoScale = true;
+function stepFDTD() {
+  var i, j, ij, ij1, i1j;
+  var abc = (0.5 - 1) / (0.5 + 1);
+
+  for (i = 0; i < NX; i++)
+    for (j = 0; j < NY - 1; j++)
+      Hx[idx(i, j)] -= DT * (Ez[idx(i, j + 1)] - Ez[idx(i, j)]);
+
+  for (i = 0; i < NX - 1; i++)
+    for (j = 0; j < NY; j++)
+      Hy[idx(i, j)] += DT * (Ez[idx(i + 1, j)] - Ez[idx(i, j)]);
+
+  for (i = 1; i < NX - 1; i++)
+    for (j = 1; j < NY - 1; j++) {
+      ij = idx(i, j);
+      Ez[ij] += DT * ((Hy[ij] - Hy[idx(i - 1, j)]) - (Hx[ij] - Hx[idx(i, j - 1)]));
+    }
+
+  var s = pulse(step);
+  for (var k = 0; k < srcJ.length; k++)
+    Ez[idx(CX, srcJ[k])] = s;
+
+  for (i = 0; i < NX * NY; i++)
+    if (PEC[i]) Ez[i] = 0;
+
+  for (j = 1; j < NY - 1; j++) {
+    Ez[idx(0, j)] = EzPrev[idx(1, j)] + abc * (Ez[idx(1, j)] - Ez[idx(0, j)]);
+    Ez[idx(NX - 1, j)] = EzPrev[idx(NX - 2, j)] + abc * (Ez[idx(NX - 2, j)] - Ez[idx(NX - 1, j)]);
+  }
+  for (i = 1; i < NX - 1; i++) {
+    Ez[idx(i, 0)] = EzPrev[idx(i, 1)] + abc * (Ez[idx(i, 1)] - Ez[idx(i, 0)]);
+    Ez[idx(i, NY - 1)] = EzPrev[idx(i, NY - 2)] + abc * (Ez[idx(i, NY - 2)] - Ez[idx(i, NY - 1)]);
   }
 
-  renderField(sim) {
-    const { nx, ny, Ez, Hx, Hy, feedX, feedY, dipoleLen, feedGap, pecMask, idx } = sim;
-    const w = this.fW, h = this.fH;
-    const cellW = w / nx, cellH = h / ny;
-    const ctx = this.fCtx;
-    const imgData = ctx.createImageData(w, h);
-    const data = imgData.data;
-
-    let maxAbs = 0;
-    if (this.autoScale) {
-      for (let i = 0; i < nx * ny; i++) {
-        const v = Math.abs(Ez[i]);
-        if (v > maxAbs) maxAbs = v;
-      }
-    }
-    const scale = this.autoScale ? (maxAbs > 1e-10 ? 1 / maxAbs : 1) : 1;
-
-    for (let i = 0; i < nx; i++) {
-      for (let j = 0; j < ny; j++) {
-        const val = Ez[idx(i, j)] * scale;
-        const r = Math.round(Math.max(0, Math.min(255, val > 0 ? 128 + val * 127 : 128)));
-        const g = Math.round(Math.max(0, Math.min(255, 128 - Math.abs(val) * 127)));
-        const b = Math.round(Math.max(0, Math.min(255, val < 0 ? 128 - val * 127 : 128)));
-        const px = Math.floor(i * cellW);
-        const py = Math.floor(j * cellH);
-        const pw = Math.ceil((i + 1) * cellW) - px;
-        const ph = Math.ceil((j + 1) * cellH) - py;
-        for (let dy = 0; dy < ph; dy++) {
-          for (let dx = 0; dx < pw; dx++) {
-            const pp = ((py + dy) * w + (px + dx)) * 4;
-            data[pp] = r; data[pp + 1] = g; data[pp + 2] = b; data[pp + 3] = 255;
-          }
-        }
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
-
-    const halfLen = dipoleLen >> 1;
-    const gapHalf = feedGap >> 1;
-    const ds = feedY - halfLen;
-    const de = feedY + halfLen;
-    const gs = feedY - gapHalf;
-    const ge = feedY + gapHalf;
-    ctx.strokeStyle = '#00ff88';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(feedX * cellW - 1, ds * cellH, 3, (de - ds) * cellH);
-    ctx.fillStyle = 'rgba(255,255,0,0.3)';
-    ctx.fillRect(feedX * cellW - 1, ds * cellH, 3, (gs - ds) * cellH);
-    ctx.fillRect(feedX * cellW - 1, ge * cellH, 3, (de - ge) * cellH);
-    ctx.fillStyle = 'rgba(255,0,0,0.5)';
-    ctx.fillRect(feedX * cellW - 1, gs * cellH, 3, (ge - gs) * cellH);
-  }
-
-  renderPattern(pattern) {
-    const ctx = this.pCtx;
-    const w = this.pW, h = this.pH;
-    ctx.clearRect(0, 0, w, h);
-
-    const cx = w / 2, cy = h / 2;
-    const maxR = Math.min(w, h) / 2 - 30;
-
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(cx, cy, maxR, 0, 2 * Math.PI);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(cx, cy, maxR / 2, 0, 2 * Math.PI);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx - maxR, cy);
-    ctx.lineTo(cx + maxR, cy);
-    ctx.moveTo(cx, cy - maxR);
-    ctx.lineTo(cx, cy + maxR);
-    ctx.stroke();
-
-    ctx.strokeStyle = '#e94560';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    const N = pattern.length;
-    for (let k = 0; k <= N; k++) {
-      const theta = (k % N) / N * 2 * Math.PI;
-      const r = pattern[k % N] * maxR;
-      const x = cx + r * Math.cos(theta);
-      const y = cy - r * Math.sin(theta);
-      if (k === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    ctx.fillStyle = '#888';
-    ctx.font = '11px Arial';
-    ctx.fillText('0°', cx + maxR + 5, cy + 4);
-    ctx.fillText('90°', cx + 4, cy - maxR - 5);
-    ctx.fillText('180°', cx - maxR - 30, cy + 4);
-    ctx.fillText('270°', cx + 4, cy + maxR + 15);
-  }
+  for (i = 0; i < NX * NY; i++) EzPrev[i] = Ez[i];
+  step++;
 }
 
-const sim = new FDTDSim(160, 160, 30, 4);
-const renderer = new Renderer(
-  document.getElementById('fieldCanvas'),
-  document.getElementById('patternCanvas')
-);
-
-const stepDisplay = document.getElementById('stepDisplay');
-const timeDisplay = document.getElementById('timeDisplay');
-const btnPlay = document.getElementById('btnPlay');
-const btnReset = document.getElementById('btnReset');
-const speedRange = document.getElementById('speedRange');
-const chkAutoScale = document.getElementById('chkAutoScale');
-
-let running = true;
-let animId = null;
-let stepsPerFrame = 3;
-
-chkAutoScale.addEventListener('change', () => {
-  renderer.autoScale = chkAutoScale.checked;
-});
-
-speedRange.addEventListener('input', () => {
-  stepsPerFrame = parseInt(speedRange.value);
-});
-
-function drawFrame() {
-  for (let s = 0; s < stepsPerFrame; s++) sim.step();
-  renderer.renderField(sim);
-  if (sim.timeStep > 50) {
-    const pat = sim.getRadiationPattern();
-    renderer.renderPattern(pat);
+function getPattern() {
+  var R = Math.min(NX, NY) / 3;
+  var pat = new Float64Array(360);
+  var maxV = 0;
+  for (var k = 0; k < 360; k++) {
+    var th = k / 360 * 2 * Math.PI;
+    var ix = Math.round(CX + R * Math.cos(th));
+    var iy = Math.round(CY + R * Math.sin(th));
+    if (ix >= 0 && ix < NX && iy >= 0 && iy < NY) {
+      pat[k] = Math.abs(Ez[idx(ix, iy)]);
+      if (pat[k] > maxV) maxV = pat[k];
+    }
   }
-  stepDisplay.textContent = sim.timeStep;
-  timeDisplay.textContent = (sim.timeStep * sim.dt).toFixed(2);
+  if (maxV > 1e-15) for (var k = 0; k < 360; k++) pat[k] /= maxV;
+  return pat;
 }
 
-function loop() {
+function renderField() {
+  var c = document.getElementById('fieldCanvas');
+  var ctx = c.getContext('2d');
+  var w = c.width, h = c.height;
+  var cw = w / NX, ch = h / NY;
+
+  var maxAbs = 0;
+  for (var i = 0; i < NX * NY; i++) {
+    var v = Math.abs(Ez[i]);
+    if (v > maxAbs) maxAbs = v;
+  }
+  var scale = maxAbs > 1e-10 ? 1 / maxAbs : 1;
+
+  for (var i = 0; i < NX; i++) {
+    for (var j = 0; j < NY; j++) {
+      var val = Ez[idx(i, j)] * scale;
+      var r = Math.round(Math.max(0, Math.min(255, val > 0 ? 128 + val * 127 : 128)));
+      var g = Math.round(Math.max(0, Math.min(255, 128 - Math.abs(val) * 127)));
+      var b = Math.round(Math.max(0, Math.min(255, val < 0 ? 128 - val * 127 : 128)));
+      ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      ctx.fillRect(i * cw, j * ch, cw + 1, ch + 1);
+    }
+  }
+
+  var half = DLEN >> 1, gh = FGAP >> 1;
+  var ds = CY - half, de = CY + half;
+  var gs = CY - gh, ge = CY + gh;
+  ctx.fillStyle = 'rgba(0,255,136,0.4)';
+  ctx.fillRect(CX * cw - 1, ds * ch, 3, (de - ds) * ch);
+  ctx.fillStyle = 'rgba(255,255,0,0.3)';
+  ctx.fillRect(CX * cw - 1, ds * ch, 3, (gs - ds) * ch);
+  ctx.fillRect(CX * cw - 1, ge * ch, 3, (de - ge) * ch);
+  ctx.fillStyle = 'rgba(255,0,0,0.5)';
+  ctx.fillRect(CX * cw - 1, gs * ch, 3, (ge - gs) * ch);
+}
+
+function renderPattern(pat) {
+  var c = document.getElementById('patternCanvas');
+  var ctx = c.getContext('2d');
+  var w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+
+  var cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 30;
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, R / 2, 0, 2 * Math.PI);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+  ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+  ctx.stroke();
+
+  ctx.strokeStyle = '#e94560';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (var k = 0; k <= 360; k++) {
+    var th = (k % 360) / 360 * 2 * Math.PI;
+    var r = pat[k % 360] * R;
+    var x = cx + r * Math.cos(th);
+    var y = cy - r * Math.sin(th);
+    if (k === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = '#888';
+  ctx.font = '12px Arial';
+  ctx.fillText('0°', cx + R + 5, cy + 4);
+  ctx.fillText('90°', cx + 4, cy - R - 5);
+  ctx.fillText('180°', cx - R - 30, cy + 4);
+  ctx.fillText('270°', cx + 4, cy + R + 15);
+}
+
+function tick() {
   if (!running) return;
-  drawFrame();
-  animId = requestAnimationFrame(loop);
+  var spf = parseInt(document.getElementById('speedRange').value);
+  for (var s = 0; s < spf; s++) stepFDTD();
+  renderField();
+  if (step > 50) renderPattern(getPattern());
+  document.getElementById('stepDisplay').textContent = step;
+  requestAnimationFrame(tick);
 }
 
-btnPlay.addEventListener('click', () => {
+document.getElementById('btnPlay').addEventListener('click', function() {
   running = !running;
-  btnPlay.textContent = running ? '⏸ 暂停' : '▶ 运行';
-  if (running) {
-    loop();
-  } else {
-    if (animId) cancelAnimationFrame(animId);
-  }
+  this.textContent = running ? '暂停' : '运行';
+  if (running) requestAnimationFrame(tick);
 });
 
-btnReset.addEventListener('click', () => {
-  const wasRunning = running;
-  if (wasRunning) { running = false; cancelAnimationFrame(animId); }
-  Object.assign(sim, new FDTDSim(160, 160, 30, 4));
-  renderer.renderField(sim);
-  const pat = new Float32Array(360);
-  renderer.renderPattern(pat);
-  stepDisplay.textContent = '0';
-  timeDisplay.textContent = '0.00';
-  if (wasRunning) {
-    running = true;
-    btnPlay.textContent = '⏸ 暂停';
-    loop();
-  }
+document.getElementById('btnReset').addEventListener('click', function() {
+  var wasRun = running;
+  running = false;
+  Ez = new Float64Array(NX * NY);
+  Hx = new Float64Array(NX * NY);
+  Hy = new Float64Array(NX * NY);
+  EzPrev = new Float64Array(NX * NY);
+  PEC = new Uint8Array(NX * NY);
+  srcJ = [];
+  step = 0;
+  (function init2() {
+    var half = DLEN >> 1, gh = FGAP >> 1;
+    var ds = CY - half, de = CY + half;
+    var gs = CY - gh, ge = CY + gh;
+    for (var i = CX; i < Math.min(CX + 3, NX); i++)
+      for (var j = ds; j <= de; j++)
+        if (j >= 0 && j < NY && !(j >= gs && j <= ge))
+          PEC[idx(i, j)] = 1;
+    for (var j = CY - gh; j <= CY + gh; j++)
+      if (j >= 0 && j < NY) srcJ.push(j);
+  })();
+  renderField();
+  renderPattern(new Float64Array(360));
+  document.getElementById('stepDisplay').textContent = '0';
+  if (wasRun) { running = true; requestAnimationFrame(tick); }
 });
 
-btnPlay.textContent = '⏸ 暂停';
-renderer.renderField(sim);
-const initPat = new Float32Array(360);
-renderer.renderPattern(initPat);
-loop();
+renderField();
+renderPattern(new Float64Array(360));
+requestAnimationFrame(tick);
 </script>
 </body>
 </html>
