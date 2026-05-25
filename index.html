@@ -6,137 +6,299 @@
 <title>2D FDTD 偶极子天线仿真</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#1a1a2e;color:#eee;font-family:'Segoe UI',Arial,sans-serif;display:flex;flex-direction:column;align-items:center;padding:10px;min-height:100vh}
+body{background:#1a1a2e;color:#eee;font-family:'Segoe UI',Arial,sans-serif;display:flex;flex-direction:column;align-items:center;padding:10px}
 h1{font-size:18px;margin:6px 0;color:#e94560;text-align:center}
 .wrap{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
-.panel{background:#16213e;border-radius:8px;padding:10px}
-.panel h3{font-size:13px;margin-bottom:6px;color:#0f3460;background:#e94560;display:inline-block;padding:2px 10px;border-radius:4px}
-canvas{display:block;width:100%;max-width:420px;height:auto;aspect-ratio:1;touch-action:none;image-rendering:pixelated}
-.ctrl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:8px}
-.ctrl button{background:#0f3460;color:#eee;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:15px;min-width:70px}
+.panel{background:#16213e;border-radius:8px;padding:10px;text-align:center}
+.panel h3{font-size:13px;margin-bottom:6px;background:#e94560;display:inline-block;padding:2px 10px;border-radius:4px}
+canvas{display:block;width:100%;max-width:400px;height:auto;aspect-ratio:1;image-rendering:pixelated;background:#0d1b2a;margin:0 auto}
+.ctrl{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:8px;flex-wrap:wrap}
+.ctrl button{background:#0f3460;color:#eee;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:16px}
 .ctrl button:active{background:#e94560}
 .ctrl label{font-size:13px;color:#aaa}
-.info{font-size:12px;color:#aaa;margin-top:6px;text-align:center;padding:0 10px}
-.info span{color:#e94560;font-weight:bold}
+.info{font-size:12px;color:#aaa;margin-top:4px}
+.info b{color:#e94560}
+.err{color:#ff6b6b;font-size:13px;margin-top:8px;display:none}
 </style>
 </head>
 <body>
 <h1>2D FDTD 偶极子天线仿真</h1>
 <div class="wrap">
-  <div class="panel">
-    <h3>Ez 场分布</h3>
-    <canvas id="fc" width="420" height="420"></canvas>
-    <div class="info">步进: <span id="sd">0</span></div>
-  </div>
-  <div class="panel">
-    <h3>辐射方向图</h3>
-    <canvas id="pc" width="420" height="420"></canvas>
-    <div class="info">归一化 |Ez| (极坐标)</div>
-  </div>
+  <div class="panel"><h3>Ez 场分布</h3><canvas id="fc" width="320" height="320"></canvas><div class="info">步进: <b id="sd">0</b></div></div>
+  <div class="panel"><h3>辐射方向图</h3><canvas id="pc" width="320" height="320"></canvas><div class="info">归一化 |Ez| (极坐标)</div></div>
 </div>
 <div class="ctrl">
   <button id="playBtn">暂停</button>
   <button id="resetBtn">重置</button>
-  <label>速度 <input type="range" id="speedR" min="1" max="8" value="3"></label>
+  <label>速度 <input type="range" id="speedR" min="1" max="6" value="2"></label>
 </div>
+<div class="err" id="errMsg"></div>
 
 <script>
-var N = 160, CX = 80, CY = 80, DT = 0.35355;
-var Ez = new Float64Array(N*N), Hx = new Float64Array(N*N), Hy = new Float64Array(N*N);
-var EzP = new Float64Array(N*N), PEC = new Uint8Array(N*N);
-var src = [], step = 0, running = true;
-var cF = document.getElementById('fc'), cP = document.getElementById('pc');
-var ctxF = cF.getContext('2d'), ctxP = cP.getContext('2d');
-var WW = cF.width, HH = cF.height;
-var imgData = ctxF.createImageData(WW, HH), pix = imgData.data;
+var N = 100;
+var CX = 50, CY = 50;
+var DT = 0.3535;
+var Ez, Hx, Hy, EzP, PEC, src;
+var step, running;
+var cF, cP, ctxF, ctxP;
+var W, H;
+var imgData, pix;
+var playBtn, resetBtn, speedR, sd, errMsg;
 
-function I(i,j){return i*N+j}
+function init() {
+  cF = document.getElementById('fc');
+  cP = document.getElementById('pc');
+  ctxF = cF.getContext('2d');
+  ctxP = cP.getContext('2d');
+  W = cF.width;
+  H = cF.height;
+  playBtn = document.getElementById('playBtn');
+  resetBtn = document.getElementById('resetBtn');
+  speedR = document.getElementById('speedR');
+  sd = document.getElementById('sd');
+  errMsg = document.getElementById('errMsg');
 
-(function init(){
-  var h = 15, gh = 2, ds = 80-h, de = 80+h, gs = 80-gh, ge = 80+gh;
-  for(var i=CX;i<CX+3&&i<N;i++) for(var j=ds;j<=de;j++) if(j>=0&&j<N&&!(j>=gs&&j<=ge)) PEC[I(i,j)]=1;
-  for(var j=gs;j<=ge;j++) if(j>=0&&j<N) src.push(j);
-})();
+  resetSim();
 
-function stepF(){
-  var i,j,ij;
-  for(i=0;i<N;i++) for(j=0;j<N-1;j++) { ij=I(i,j); Hx[ij] -= DT*(Ez[I(i,j+1)]-Ez[ij]); }
-  for(i=0;i<N-1;i++) for(j=0;j<N;j++) { ij=I(i,j); Hy[ij] += DT*(Ez[I(i+1,j)]-Ez[ij]); }
-  for(i=1;i<N-1;i++) for(j=1;j<N-1;j++) { ij=I(i,j); Ez[ij] += DT*((Hy[ij]-Hy[I(i-1,j)])-(Hx[ij]-Hx[I(i,j-1)])); }
-  var p = Math.exp(-((step-40)/12)**2);
-  for(var k=0;k<src.length;k++) Ez[I(CX,src[k])] = p;
-  for(i=0;i<N*N;i++) if(PEC[i]) Ez[i]=0;
-  var abc = -1/3;
-  for(j=1;j<N-1;j++){ Ez[I(0,j)]=EzP[I(1,j)]+abc*(Ez[I(1,j)]-Ez[I(0,j)]); Ez[I(N-1,j)]=EzP[I(N-2,j)]+abc*(Ez[I(N-2,j)]-Ez[I(N-1,j)]); }
-  for(i=1;i<N-1;i++){ Ez[I(i,0)]=EzP[I(i,1)]+abc*(Ez[I(i,1)]-Ez[I(i,0)]); Ez[I(i,N-1)]=EzP[I(i,N-2)]+abc*(Ez[I(i,N-2)]-Ez[I(i,N-1)]); }
-  for(i=0;i<N*N;i++) EzP[i]=Ez[i];
-  step++;
-}
+  playBtn.addEventListener('click', function() {
+    running = !running;
+    playBtn.textContent = running ? '暂停' : '运行';
+    if (running) { requestAnimationFrame(tick); }
+  });
 
-function drawField(){
-  var maxA=0,i,j;
-  for(i=0;i<N*N;i++){var v=Math.abs(Ez[i]);if(v>maxA)maxA=v;}
-  var sc = maxA>1e-10?255/maxA:1;
-  var cw=WW/N,ch=HH/N;
-  for(i=0;i<N;i++) for(j=0;j<N;j++){
-    var v = Ez[I(i,j)]*sc;
-    var r=128,g=128,b=128;
-    if(v>0){r=Math.min(255,128+v|0);g=Math.max(0,128-v|0);b=Math.max(0,128-v|0);}
-    else if(v<0){r=Math.max(0,128+v|0);g=Math.max(0,128+v|0);b=Math.min(255,128-v|0);}
-    var px=(i*cw)|0, py=(j*ch)|0, pw=Math.ceil((i+1)*cw)-px, ph=Math.ceil((j+1)*ch)-py;
-    for(var dy=0;dy<ph;dy++) for(var dx=0;dx<pw;dx++){
-      var pp=((py+dy)*WW+px+dx)*4;
-      pix[pp]=r;pix[pp+1]=g;pix[pp+2]=b;pix[pp+3]=255;
-    }
-  }
-  ctxF.putImageData(imgData,0,0);
-  var h=15,gh=2,ds=80-h,de=80+h,gs=80-gh,ge=80+gh;
-  ctxF.fillStyle='rgba(0,255,136,0.3)';ctxF.fillRect(CX*cw,ds*ch,3,(de-ds)*ch);
-  ctxF.fillStyle='rgba(255,255,0,0.2)';ctxF.fillRect(CX*cw,ds*ch,3,(gs-ds)*ch);ctxF.fillRect(CX*cw,ge*ch,3,(de-ge)*ch);
-  ctxF.fillStyle='rgba(255,0,0,0.4)';ctxF.fillRect(CX*cw,gs*ch,3,(ge-gs)*ch);
-}
+  resetBtn.addEventListener('click', function() {
+    running = false;
+    resetSim();
+    drawField();
+    clearPattern();
+    sd.textContent = '0';
+    running = true;
+    playBtn.textContent = '暂停';
+    requestAnimationFrame(tick);
+  });
 
-function drawPattern(){
-  var w=cP.width,h=cP.height,cx=w/2,cy=h/2,R=Math.min(w,h)/2-25;
-  ctxP.clearRect(0,0,w,h);
-  ctxP.strokeStyle='#444';ctxP.lineWidth=1;
-  ctxP.beginPath();ctxP.arc(cx,cy,R,0,7);ctxP.stroke();
-  ctxP.beginPath();ctxP.arc(cx,cy,R/2,0,7);ctxP.stroke();
-  ctxP.beginPath();ctxP.moveTo(cx-R,cy);ctxP.lineTo(cx+R,cy);ctxP.moveTo(cx,cy-R);ctxP.lineTo(cx,cy+R);ctxP.stroke();
-  var rad=Math.min(N,N)/3,pat=new Float64Array(360),maxV=0;
-  for(var k=0;k<360;k++){var th=k/360*6.2832,ix=Math.round(CX+rad*Math.cos(th)),iy=Math.round(CY+rad*Math.sin(th));if(ix>=0&&ix<N&&iy>=0&&iy<N){pat[k]=Math.abs(Ez[I(ix,iy)]);if(pat[k]>maxV)maxV=pat[k];}}
-  if(maxV>1e-15) for(var k=0;k<360;k++) pat[k]/=maxV;
-  ctxP.strokeStyle='#e94560';ctxP.lineWidth=2.5;ctxP.beginPath();
-  for(var k=0;k<=360;k++){var th=(k%360)/360*6.2832,r=pat[k%360]*R,x=cx+r*Math.cos(th),y=cy-r*Math.sin(th);if(k==0)ctxP.moveTo(x,y);else ctxP.lineTo(x,y);}
-  ctxP.stroke();
-  ctxP.fillStyle='#888';ctxP.font='12px Arial';ctxP.fillText('0°',cx+R+5,cy+4);ctxP.fillText('90°',cx+4,cy-R-5);ctxP.fillText('180°',cx-R-30,cy+4);ctxP.fillText('270°',cx+4,cy+R+15);
-}
-
-function tick(){
-  if(!running)return;
-  var sp=parseInt(document.getElementById('speedR').value);
-  for(var s=0;s<sp;s++)stepF();
-  drawField();
-  if(step>50)drawPattern();
-  document.getElementById('sd').textContent=step;
+  running = true;
   requestAnimationFrame(tick);
 }
 
-document.getElementById('playBtn').addEventListener('click',function(){running=!running;this.textContent=running?'暂停':'运行';if(running)requestAnimationFrame(tick);});
-document.getElementById('resetBtn').addEventListener('click',function(){
-  var was=running;running=false;
-  Ez=new Float64Array(N*N);Hx=new Float64Array(N*N);Hy=new Float64Array(N*N);EzP=new Float64Array(N*N);PEC=new Uint8Array(N*N);src=[];step=0;
-  var h=15,gh=2,ds=80-h,de=80+h,gs=80-gh,ge=80+gh;
-  for(var i=CX;i<CX+3&&i<N;i++) for(var j=ds;j<=de;j++) if(j>=0&&j<N&&!(j>=gs&&j<=ge)) PEC[I(i,j)]=1;
-  for(var j=gs;j<=ge;j++) if(j>=0&&j<N) src.push(j);
-  imgData=ctxF.createImageData(WW,HH);pix=imgData.data;
-  ctxF.putImageData(imgData,0,0);
-  ctxP.clearRect(0,0,cP.width,cP.height);
-  document.getElementById('sd').textContent='0';
-  if(was){running=true;requestAnimationFrame(tick);}
-});
+function resetSim() {
+  var i, j, k;
+  var n2 = N * N;
+  Ez = new Float64Array(n2);
+  Hx = new Float64Array(n2);
+  Hy = new Float64Array(n2);
+  EzP = new Float64Array(n2);
+  PEC = new Uint8Array(n2);
+  src = [];
+  step = 0;
 
-requestAnimationFrame(tick);
+  var half = 12, gap = 2;
+  var ds = CY - half, de = CY + half;
+  var gs = CY - gap, ge = CY + gap;
+  for (i = CX; i < CX + 3 && i < N; i++) {
+    for (j = ds; j <= de; j++) {
+      if (j >= 0 && j < N && !(j >= gs && j <= ge)) {
+        PEC[i * N + j] = 1;
+      }
+    }
+  }
+  for (j = gs; j <= ge; j++) {
+    if (j >= 0 && j < N) src.push(j);
+  }
+
+  imgData = ctxF.createImageData(W, H);
+  pix = imgData.data;
+}
+
+function I(i, j) { return i * N + j; }
+
+function stepF() {
+  var i, j, ij;
+  var abc = -1 / 3;
+
+  for (i = 0; i < N; i++) {
+    for (j = 0; j < N - 1; j++) {
+      ij = I(i, j);
+      Hx[ij] -= DT * (Ez[I(i, j + 1)] - Ez[ij]);
+    }
+  }
+
+  for (i = 0; i < N - 1; i++) {
+    for (j = 0; j < N; j++) {
+      ij = I(i, j);
+      Hy[ij] += DT * (Ez[I(i + 1, j)] - Ez[ij]);
+    }
+  }
+
+  for (i = 1; i < N - 1; i++) {
+    for (j = 1; j < N - 1; j++) {
+      ij = I(i, j);
+      Ez[ij] += DT * ((Hy[ij] - Hy[I(i - 1, j)]) - (Hx[ij] - Hx[I(i, j - 1)]));
+    }
+  }
+
+  var t = step - 40;
+  var p = Math.exp(-(t * t) / 144);
+  for (j = 0; j < src.length; j++) {
+    Ez[I(CX, src[j])] = p;
+  }
+
+  for (i = 0; i < N * N; i++) {
+    if (PEC[i]) Ez[i] = 0;
+  }
+
+  for (j = 1; j < N - 1; j++) {
+    Ez[I(0, j)] = EzP[I(1, j)] + abc * (Ez[I(1, j)] - Ez[I(0, j)]);
+    Ez[I(N - 1, j)] = EzP[I(N - 2, j)] + abc * (Ez[I(N - 2, j)] - Ez[I(N - 1, j)]);
+  }
+  for (i = 1; i < N - 1; i++) {
+    Ez[I(i, 0)] = EzP[I(i, 1)] + abc * (Ez[I(i, 1)] - Ez[I(i, 0)]);
+    Ez[I(i, N - 1)] = EzP[I(i, N - 2)] + abc * (Ez[I(i, N - 2)] - Ez[I(i, N - 1)]);
+  }
+
+  for (i = 0; i < N * N; i++) EzP[i] = Ez[i];
+  step++;
+}
+
+function drawField() {
+  var i, j;
+  var maxA = 0, v;
+  for (i = 0; i < N * N; i++) {
+    v = Math.abs(Ez[i]);
+    if (v > maxA) maxA = v;
+  }
+  var sc = maxA > 1e-10 ? 255 / maxA : 1;
+  var cw = W / N, ch = H / N;
+
+  for (i = 0; i < N; i++) {
+    for (j = 0; j < N; j++) {
+      v = Ez[I(i, j)] * sc;
+      var r = 128, g = 128, b = 128;
+      if (v > 0) {
+        r = 128 + Math.round(v);
+        if (r > 255) r = 255;
+        g = 128 - Math.round(v);
+        if (g < 0) g = 0;
+        b = g;
+      } else if (v < 0) {
+        r = 128 + Math.round(v);
+        if (r < 0) r = 0;
+        g = r;
+        b = 128 - Math.round(v);
+        if (b > 255) b = 255;
+      }
+      var px = Math.floor(i * cw);
+      var py = Math.floor(j * ch);
+      var pw = Math.ceil((i + 1) * cw) - px;
+      var ph = Math.ceil((j + 1) * ch) - py;
+      var dx, dy;
+      for (dy = 0; dy < ph; dy++) {
+        for (dx = 0; dx < pw; dx++) {
+          var pp = ((py + dy) * W + px + dx) * 4;
+          pix[pp] = r;
+          pix[pp + 1] = g;
+          pix[pp + 2] = b;
+          pix[pp + 3] = 255;
+        }
+      }
+    }
+  }
+  ctxF.putImageData(imgData, 0, 0);
+
+  var half = 12, gap = 2;
+  var ds = CY - half, de = CY + half;
+  var gs = CY - gap, ge = CY + gap;
+  ctxF.fillStyle = 'rgba(0,255,136,0.3)';
+  ctxF.fillRect(CX * cw - 1, ds * ch, 3, (de - ds) * ch);
+  ctxF.fillStyle = 'rgba(255,255,0,0.2)';
+  ctxF.fillRect(CX * cw - 1, ds * ch, 3, (gs - ds) * ch);
+  ctxF.fillRect(CX * cw - 1, ge * ch, 3, (de - ge) * ch);
+  ctxF.fillStyle = 'rgba(255,0,0,0.4)';
+  ctxF.fillRect(CX * cw - 1, gs * ch, 3, (ge - gs) * ch);
+}
+
+function clearPattern() {
+  ctxP.clearRect(0, 0, cP.width, cP.height);
+}
+
+function drawPattern() {
+  var w = cP.width, h = cP.height;
+  var cx = w / 2, cy = h / 2;
+  var R = Math.min(w, h) / 2 - 25;
+
+  ctxP.clearRect(0, 0, w, h);
+  ctxP.strokeStyle = '#444';
+  ctxP.lineWidth = 1;
+  ctxP.beginPath();
+  ctxP.arc(cx, cy, R, 0, Math.PI * 2);
+  ctxP.stroke();
+  ctxP.beginPath();
+  ctxP.arc(cx, cy, R / 2, 0, Math.PI * 2);
+  ctxP.stroke();
+  ctxP.beginPath();
+  ctxP.moveTo(cx - R, cy);
+  ctxP.lineTo(cx + R, cy);
+  ctxP.moveTo(cx, cy - R);
+  ctxP.lineTo(cx, cy + R);
+  ctxP.stroke();
+
+  var radius = Math.floor(Math.min(N, N) / 3);
+  var pat = new Float64Array(360);
+  var maxV = 0;
+  var k, th, ix, iy;
+  for (k = 0; k < 360; k++) {
+    th = k / 360 * Math.PI * 2;
+    ix = Math.round(CX + radius * Math.cos(th));
+    iy = Math.round(CY + radius * Math.sin(th));
+    if (ix >= 0 && ix < N && iy >= 0 && iy < N) {
+      pat[k] = Math.abs(Ez[I(ix, iy)]);
+      if (pat[k] > maxV) maxV = pat[k];
+    }
+  }
+  if (maxV > 1e-15) {
+    for (k = 0; k < 360; k++) pat[k] /= maxV;
+  }
+
+  ctxP.strokeStyle = '#e94560';
+  ctxP.lineWidth = 2.5;
+  ctxP.beginPath();
+  for (k = 0; k <= 360; k++) {
+    th = (k % 360) / 360 * Math.PI * 2;
+    var rr = pat[k % 360] * R;
+    var x = cx + rr * Math.cos(th);
+    var y = cy - rr * Math.sin(th);
+    if (k === 0) ctxP.moveTo(x, y);
+    else ctxP.lineTo(x, y);
+  }
+  ctxP.stroke();
+
+  ctxP.fillStyle = '#888';
+  ctxP.font = '12px Arial';
+  ctxP.fillText('0\u00B0', cx + R + 5, cy + 4);
+  ctxP.fillText('90\u00B0', cx + 4, cy - R - 5);
+  ctxP.fillText('180\u00B0', cx - R - 30, cy + 4);
+  ctxP.fillText('270\u00B0', cx + 4, cy + R + 15);
+}
+
+function tick() {
+  try {
+    if (!running) return;
+    var sp = parseInt(speedR.value, 10);
+    var s;
+    for (s = 0; s < sp; s++) stepF();
+    drawField();
+    if (step > 50) drawPattern();
+    sd.textContent = step;
+    requestAnimationFrame(tick);
+  } catch (e) {
+    errMsg.style.display = 'block';
+    errMsg.textContent = '错误: ' + e.message;
+    running = false;
+    playBtn.textContent = '运行';
+  }
+}
+
+window.onload = init;
 </script>
 </body>
 </html>
